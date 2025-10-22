@@ -73,96 +73,103 @@ export default function SubnetCalculator() {
     const hostsPerSubnet = Math.pow(2, hostBits) - 2
     steps.push(`Paso 4: Hosts por subred: 2^${hostBits} - 2 = ${hostsPerSubnet} hosts`)
 
-    // Step 5: Calculate network boundaries
+    // Step 5: Calculate network boundaries and align to block size
     const baseOctets = networkAddress.split(".").map(Number)
     const originalMaskOctets = subnetMask.split(".").map(Number)
     const blockSize = Math.pow(2, 32 - newPrefixValue)
     
-    // Calcular el límite superior de la red original
-    const networkLimit = [...baseOctets]
+    // Calcular la dirección de red original (aplicando la máscara original)
+    const originalNetworkBase = [...baseOctets]
     for (let j = 0; j < 4; j++) {
-      networkLimit[j] = baseOctets[j] | (~originalMaskOctets[j] & 255)
+      originalNetworkBase[j] = baseOctets[j] & originalMaskOctets[j]
     }
     
+    // Calcular el límite superior de la red original (dirección de broadcast)
+    const networkLimit = [...originalNetworkBase]
+    for (let j = 0; j < 4; j++) {
+      networkLimit[j] = originalNetworkBase[j] | (~originalMaskOctets[j] & 255)
+    }
+    
+    // Alinear la dirección base al tamaño de bloque de la nueva subred
+    // Convertir a número de 32 bits para facilitar la alineación
+    let baseIP = (baseOctets[0] << 24) | (baseOctets[1] << 16) | (baseOctets[2] << 8) | baseOctets[3]
+    const originalNetworkIP = (originalNetworkBase[0] << 24) | (originalNetworkBase[1] << 16) | (originalNetworkBase[2] << 8) | originalNetworkBase[3]
+    const networkLimitIP = (networkLimit[0] << 24) | (networkLimit[1] << 16) | (networkLimit[2] << 8) | networkLimit[3]
+    
+    // Alinear al múltiplo del tamaño de bloque
+    const alignedBaseIP = Math.floor(baseIP / blockSize) * blockSize
+    
+    // Asegurar que la dirección alineada esté dentro de la red original
+    let startIP = alignedBaseIP
+    if (startIP < originalNetworkIP) {
+      startIP = originalNetworkIP
+    }
+    
+    // Convertir de vuelta a octetos
+    const alignedOctets = [
+      (startIP >>> 24) & 255,
+      (startIP >>> 16) & 255,
+      (startIP >>> 8) & 255,
+      startIP & 255
+    ]
+    
     const subnets = []
-    steps.push(`Paso 5: Generando ${numSubnets} subredes con tamaño de bloque ${blockSize}`)
+    steps.push(`Paso 5: Tamaño de bloque por subred: ${blockSize} IPs`)
+    steps.push(`Paso 6: Red original: ${originalNetworkBase.join(".")} - ${networkLimit.join(".")}`)
+    steps.push(`Paso 7: Primera subred alineada: ${alignedOctets.join(".")} (alineada al múltiplo de ${blockSize})`)
 
     for (let i = 0; i < numSubnets; i++) {
-      // Calcular dirección de red
-      const subnetBase = [...baseOctets]
-      let carry = i * blockSize
-
-      for (let j = 3; j >= 0; j--) {
-        const total = subnetBase[j] + (carry % 256)
-        subnetBase[j] = total % 256
-        carry = Math.floor(carry / 256) + Math.floor(total / 256)
-      }
-
+      // Calcular dirección de red para esta subred
+      const currentSubnetIP = startIP + (i * blockSize)
+      
       // Verificar que la subred no exceda los límites de la red original
-      let exceedsLimit = false
-      for (let j = 0; j < 4; j++) {
-        if (subnetBase[j] > networkLimit[j]) {
-          exceedsLimit = true
-          break
-        } else if (subnetBase[j] < networkLimit[j]) {
-          break
-        }
-      }
-
-      if (exceedsLimit) {
-        steps.push(`⚠️ Advertencia: La subred ${i + 1} excede los límites de la red original. Se detiene la generación.`)
+      if (currentSubnetIP > networkLimitIP) {
+        steps.push(`⚠️ Advertencia: La subred ${i + 1} excedería los límites de la red original. Se detiene la generación.`)
         break
       }
+      
+      const subnetBase = [
+        (currentSubnetIP >>> 24) & 255,
+        (currentSubnetIP >>> 16) & 255,
+        (currentSubnetIP >>> 8) & 255,
+        currentSubnetIP & 255
+      ]
 
       const networkAddr = subnetBase.join(".")
       
-      // Calcular primera IP utilizable (red + 1)
-      const firstUsable = [...subnetBase]
-      let carryFirst = 1
-      for (let j = 3; j >= 0 && carryFirst > 0; j--) {
-        const total = firstUsable[j] + carryFirst
-        firstUsable[j] = total % 256
-        carryFirst = Math.floor(total / 256)
-      }
+      // Calcular dirección de broadcast (última IP del bloque)
+      const broadcastIP = currentSubnetIP + blockSize - 1
       
-      // Calcular dirección de broadcast (red + blockSize - 1)
-      const broadcast = [...subnetBase]
-      let carryBroadcast = blockSize - 1
-      for (let j = 3; j >= 0 && carryBroadcast > 0; j--) {
-        const total = broadcast[j] + carryBroadcast
-        broadcast[j] = total % 256
-        carryBroadcast = Math.floor(total / 256)
-      }
-      
-      // Verificar que el broadcast no exceda los límites
-      let broadcastExceeds = false
-      for (let j = 0; j < 4; j++) {
-        if (broadcast[j] > networkLimit[j]) {
-          broadcastExceeds = true
-          break
-        } else if (broadcast[j] < networkLimit[j]) {
-          break
-        }
-      }
-
-      if (broadcastExceeds) {
-        steps.push(`⚠️ Advertencia: El broadcast de la subred ${i + 1} excede los límites de la red original. Se detiene la generación.`)
+      // Verificar que el broadcast no exceda los límites de la red original
+      if (broadcastIP > networkLimitIP) {
+        steps.push(`⚠️ Advertencia: El broadcast de la subred ${i + 1} excedería los límites de la red original. Se detiene la generación.`)
         break
       }
       
+      const broadcast = [
+        (broadcastIP >>> 24) & 255,
+        (broadcastIP >>> 16) & 255,
+        (broadcastIP >>> 8) & 255,
+        broadcastIP & 255
+      ]
+      
+      // Calcular primera IP utilizable (red + 1)
+      const firstUsableIP = currentSubnetIP + 1
+      const firstUsable = [
+        (firstUsableIP >>> 24) & 255,
+        (firstUsableIP >>> 16) & 255,
+        (firstUsableIP >>> 8) & 255,
+        firstUsableIP & 255
+      ]
+      
       // Calcular última IP utilizable (broadcast - 1)
-      const lastUsable = [...broadcast]
-      let carryLast = -1
-      for (let j = 3; j >= 0 && carryLast !== 0; j--) {
-        const total = lastUsable[j] + carryLast
-        if (total < 0) {
-          lastUsable[j] = 256 + total
-          carryLast = -1
-        } else {
-          lastUsable[j] = total
-          carryLast = 0
-        }
-      }
+      const lastUsableIP = broadcastIP - 1
+      const lastUsable = [
+        (lastUsableIP >>> 24) & 255,
+        (lastUsableIP >>> 16) & 255,
+        (lastUsableIP >>> 8) & 255,
+        lastUsableIP & 255
+      ]
 
       subnets.push({
         subnetNumber: i + 1,
